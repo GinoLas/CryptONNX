@@ -33,6 +33,8 @@ class ONNXEncryptor:
         """
         Prende un oggetto gs.Graph, cifra i pesi e aggiunge come attributo ai nodi HMAAC sui pesi.
         """
+        print(f"hmac_key = {self.hmac_key}")
+        print(f"Key = {self.key}")
         for node in graph.nodes:
             if len(node.inputs) > 1:
                 for input in node.inputs:
@@ -87,7 +89,7 @@ class ONNXEncryptor:
                             input.values = np.array(encrypted_bytes, dtype=np.int8)
 
                         # Biases
-                        elif "mul_tensor" in input.name or "add_tensor" in input.name:
+                        elif "mul_tensor" in input.name or "add_tensor" in input.name or "bias_tensor" in input.name:
                             shape = input.values.shape
                             weights_tensor = np.array(input.values,dtype = np.int32)
 
