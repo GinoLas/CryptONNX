@@ -5,15 +5,15 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 import hmac
 import hashlib
+import secrets
 
 class ONNXEncryptor:
     def __init__(self, key_hex: str, hmac_key_hex: str, nonce_hex: str):
         self.key = bytes.fromhex(key_hex)
         self.hmac_key = bytes.fromhex(hmac_key_hex)
-        self.nonce = bytes.fromhex(nonce_hex)
         self.backend = default_backend()
 
-    def _encrypt_weights(self, data_numpy: np.ndarray) -> np.ndarray:
+    def _encrypt_weights(self, data_numpy: np.ndarray, iv) -> np.ndarray:
         raw_bytes = data_numpy.tobytes()
         cipher = Cipher(algorithms.AES(self.key), modes.CTR(self.nonce), backend=self.backend)
         encryptor = cipher.encryptor()
@@ -21,7 +21,7 @@ class ONNXEncryptor:
 
         return np.frombuffer(encrypted_data, dtype=np.uint8)
     
-    def _encrypt_biases(self, data_numpy: np.ndarray) -> np.ndarray:
+    def _encrypt_biases(self, data_numpy: np.ndarray, iv) -> np.ndarray:
         raw_bytes = data_numpy.tobytes()
         cipher = Cipher(algorithms.AES(self.key), modes.CTR(self.nonce), backend=self.backend)
         encryptor = cipher.encryptor()
@@ -53,7 +53,8 @@ class ONNXEncryptor:
                             #         print(",")  
                             #     else:
                             #         print(", ",end="") 
-                            encrypted_bytes = self._encrypt_weights(weights_tensor)
+                            iv = secrets.token_hex(32);
+                            encrypted_bytes = self._encrypt_weights(weights_tensor,iv)
                             encrypted_bytes = encrypted_bytes.reshape(weights_tensor.shape)
                             digest = hmac.new(self.hmac_key, np.ascontiguousarray(encrypted_bytes), hashlib.sha256).digest()
                             hmac_array = np.frombuffer(digest,dtype=np.uint32)
@@ -66,17 +67,20 @@ class ONNXEncryptor:
                                 name = f"{input.name}_hmac",
                                 values = hmac_array
                             ))
+                            node.attrs[f"{input.name}_iv"] = (gs.Constant(
+                                name = f"{input.name}_iv",
+                                values = iv
+                            ))
 
                         # MatMul constants
                         elif "MatMul" in input.name or (hasattr(input, 'name') and "fc" in input.name):
                             shape = input.values.shape
                             weights_tensor = np.array(input.values, dtype=np.int8)
-                            
-                            encrypted_bytes = self._encrypt_weights(weights_tensor)
+                            iv = secrets.token_hex(32);
+                            encrypted_bytes = self._encrypt_weights(weights_tensor,iv)
                             encrypted_bytes.shape = weights_tensor.shape
                             digest = hmac.new(self.hmac_key, np.ascontiguousarray(encrypted_bytes), hashlib.sha256).digest()
                             hmac_array = np.frombuffer(digest,dtype=np.uint32)
-
                             input.values = np.array(encrypted_bytes,dtype = np.int32)
                             input.values = input.values.reshape(shape)
                             if('hmac' not in node.attrs):
@@ -85,6 +89,10 @@ class ONNXEncryptor:
                                 name = f"{input.name}_hmac",
                                 values = hmac_array
                             ))
+                            node.attrs[f"{input.name}_iv"] = (gs.Constant(
+                                name = f"{input.name}_iv",
+                                values = iv
+                            ))
                             
                             input.values = np.array(encrypted_bytes, dtype=np.int8)
 
@@ -92,7 +100,7 @@ class ONNXEncryptor:
                         elif "mul_tensor" in input.name or "add_tensor" in input.name or "bias_tensor" in input.name:
                             shape = input.values.shape
                             weights_tensor = np.array(input.values,dtype = np.int32)
-
+                            iv = secrets.token_hex(32);
                             encrypted_bytes = self._encrypt_biases(weights_tensor)
                             encrypted_bytes = encrypted_bytes.reshape(weights_tensor.shape)
                             digest = hmac.new(self.hmac_key, np.ascontiguousarray(encrypted_bytes), hashlib.sha256).digest()
@@ -105,6 +113,10 @@ class ONNXEncryptor:
                             node.attrs[f"{input.name}_hmac"] = (gs.Constant(
                                 name = f"{input.name}_hmac",
                                 values = hmac_array
+                            ))
+                            node.attrs[f"{input.name}_iv"] = (gs.Constant(
+                                name = f"{input.name}_iv",
+                                values = iv
                             ))
 
 
