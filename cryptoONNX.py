@@ -16,21 +16,51 @@ class ONNXEncryptor:
         self.hmac_key_hex = hmac_key_hex
         self.backend = default_backend()
  
+    def _ctr_encrypt(self, data_numpy: np.ndarray, iv) -> bytes:
+        """AES-CTR di un tensore, senza padding: CTR cifra anche un ultimo blocco parziale
+        (usa solo i primi byte del keystream). Se la dimensione non è multipla di 16 byte
+        stampa le informazioni sul tensore."""
+        raw_bytes = data_numpy.tobytes()
+        n = len(raw_bytes)
+
+        cipher = Cipher(algorithms.AES(self.key), modes.CTR(iv), backend=self.backend)
+        encryptor = cipher.encryptor()
+        encrypted_data = encryptor.update(raw_bytes) + encryptor.finalize()
+
+        if n % 16 != 0:
+            short = lambda b: b.hex() if len(b) <= 64 else b[:32].hex() + " ... " + b[-32:].hex()
+            print("[CTR] ---- tensore non multiplo di 16 byte ----")
+            print(f"[CTR] dtype={data_numpy.dtype}, shape={data_numpy.shape}, elementi={data_numpy.size}")
+            print(f"[CTR] size = {n} byte = {n // 16} blocchi interi + {n % 16} byte (servirebbero {(-n) % 16} di padding)")
+            print(f"[CTR] iv  = {bytes(iv).hex()}")
+            print(f"[CTR] key = {self.key[:2].hex()}...{self.key[-2:].hex()}")
+            print("[CTR] vettore originale:", np.array2string(data_numpy.reshape(-1), threshold=64, edgeitems=8))
+            print("[CTR] originale (hex):  ", short(raw_bytes))
+            print("[CTR] cifrato (hex):    ", short(encrypted_data))
+
+        return encrypted_data
+
+    def _ctr_bytes(self, raw: bytes, iv) -> bytes:
+        """AES-CTR su byte grezzi: cifrare e decifrare sono la stessa operazione."""
+        cipher = Cipher(algorithms.AES(self.key), modes.CTR(iv), backend=self.backend)
+        encryptor = cipher.encryptor()
+        return encryptor.update(raw) + encryptor.finalize()
+
+    def broadcast_encrypted(self, encrypted: np.ndarray, iv, new_shape) -> np.ndarray:
+        """Costante già cifrata da espandere a `new_shape`: decifra, espande il chiaro e ricifra
+        il vettore intero con lo stesso IV, come un unico flusso CTR. Restituisce un array con lo
+        stesso dtype di `encrypted` e forma `new_shape`."""
+        dtype = encrypted.dtype
+        plain = np.frombuffer(self._ctr_bytes(encrypted.tobytes(), iv), dtype=dtype).reshape(encrypted.shape)
+        expanded = np.ascontiguousarray(np.broadcast_to(plain, new_shape))
+        new_cipher = self._ctr_bytes(expanded.tobytes(), iv)
+        return np.frombuffer(new_cipher, dtype=dtype).reshape(new_shape).copy()
+
     def _encrypt_weights(self, data_numpy: np.ndarray, iv) -> np.ndarray:
-        raw_bytes = data_numpy.tobytes()
-        cipher = Cipher(algorithms.AES(self.key), modes.CTR(iv), backend=self.backend)
-        encryptor = cipher.encryptor()
-        encrypted_data = encryptor.update(raw_bytes) + encryptor.finalize()
- 
-        return np.frombuffer(encrypted_data, dtype=np.uint8)
-   
+        return np.frombuffer(self._ctr_encrypt(data_numpy, iv), dtype=np.uint8)
+
     def _encrypt_biases(self, data_numpy: np.ndarray, iv) -> np.ndarray:
-        raw_bytes = data_numpy.tobytes()
-        cipher = Cipher(algorithms.AES(self.key), modes.CTR(iv), backend=self.backend)
-        encryptor = cipher.encryptor()
-        encrypted_data = encryptor.update(raw_bytes) + encryptor.finalize()
- 
-        return np.frombuffer(encrypted_data, dtype=np.uint32)
+        return np.frombuffer(self._ctr_encrypt(data_numpy, iv), dtype=np.uint32)
  
     def process_graph(self, graph: gs.Graph) -> gs.Graph:
         """
